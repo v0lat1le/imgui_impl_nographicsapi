@@ -1,0 +1,12 @@
+[submodule "external/RGFW"]
+	path = external/RGFW
+	url = https://github.com/ColleagueRiley/RGFW
+[submodule "external/NoGraphicsAPI"]
+	path = external/NoGraphicsAPI
+	url = https://github.com/sebbbi/NoGraphicsAPI
+[submodule "external/imgui"]
+	path = external/imgui
+	url = https://github.com/ocornut/imgui
+[submodule "external/imgui_impl_rgfw"]
+	path = external/imgui_impl_rgfw
+	url = https://github.com/Hedgehogsoft/imgui_impl_rgfw.h
