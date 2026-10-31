@@ -1,0 +1,95 @@
+﻿{
+  "version": 8,
+  "configurePresets": [
+    {
+      "name": "debug_base",
+      "hidden": true,
+      "binaryDir": "${sourceDir}/build/${presetName}",
+      "cacheVariables": {
+        "CMAKE_CXX_STANDARD": "23",
+        "CMAKE_CXX_STANDARD_REQUIRED": "ON",
+        "CMAKE_BUILD_TYPE": "Debug"
+      }
+    },
+    {
+      "name": "debug_gcc",
+      "inherits": "debug_base",
+      "cacheVariables": {
+        "CMAKE_CXX_FLAGS": "-Wall -Wextra -Wpedantic -fsanitize=address,undefined"
+      }
+    },
+    {
+      "name": "debug_msvc",
+      "inherits": "debug_base",
+      "cacheVariables": {
+        "CMAKE_CXX_FLAGS": "/W4"
+      },
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Windows"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "debug_gcc",
+      "configurePreset": "debug_gcc"
+    },
+    {
+      "name": "debug_msvc",
+      "configurePreset": "debug_msvc"
+    }
+  ],
+  "testPresets": [
+    {
+      "name": "debug_gcc",
+      "configurePreset": "debug_gcc"
+    },
+    {
+      "name": "debug_msvc",
+      "configurePreset": "debug_msvc",
+      "filter": {
+        "exclude": {
+          "name": "test_simulation_perf.*"
+        }
+      }
+    }
+  ],
+  "workflowPresets": [
+    {
+      "name": "debug_gcc",
+      "steps": [
+        {
+          "type": "configure",
+          "name": "debug_gcc"
+        },
+        {
+          "type": "build",
+          "name": "debug_gcc"
+        },
+        {
+          "type": "test",
+          "name": "debug_gcc"
+        }
+      ]
+    },
+    {
+      "name": "debug_msvc",
+      "steps": [
+        {
+          "type": "configure",
+          "name": "debug_msvc"
+        },
+        {
+          "type": "build",
+          "name": "debug_msvc"
+        },
+        {
+          "type": "test",
+          "name": "debug_msvc"
+        }
+      ]
+    }
+  ]
+}
