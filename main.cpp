@@ -27,9 +27,9 @@ void convert_imgui_style_to_linear_HACK() {
     ImGuiStyle& style = ImGui::GetStyle();
     for (int i = 0; i < ImGuiCol_COUNT; i++) {
         ImVec4& col = style.Colors[i];
-        col.x = srgb_to_linear(col.x);
-        col.y = srgb_to_linear(col.y);
-        col.z = srgb_to_linear(col.z);
+        col.x = srgb_to_linear(col.x*col.w)/col.w;
+        col.y = srgb_to_linear(col.y*col.w)/col.w;
+        col.z = srgb_to_linear(col.z*col.w)/col.w;
     }
 }
 
@@ -43,7 +43,7 @@ int main() {
         .vertex = {.code = {vertex_code, sizeof(vertex_code)}, .entry_point = "vertexMain"},
         .fragment = {.code = {fragment_code, sizeof(fragment_code)}, .entry_point = "fragmentMain"},
         .color_targets = {{.format = gpu::Format::bgra8_srgb } }
-        });
+    });
 
     gpu::TimelinePoint latest_completion{ .semaphore = gpu::create_timeline_semaphore(device) };
     gpu::CommandPool* command_pools[] = { gpu::create_command_pool(device), gpu::create_command_pool(device) };
@@ -53,12 +53,13 @@ int main() {
     ImGuiIO& io = ImGui::GetIO();
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;
+    io.ConfigFlags |= ImGuiConfigFlags_IsSRGB;
 
     ImGui::StyleColorsDark();
     convert_imgui_style_to_linear_HACK();  // TODO: do this in the shader?
 
     ImGui_ImplRgfw_InitForOther(window, true);
-    ImGui_ImplNoGraphicsAPI_Init({device});
+    ImGui_ImplNoGraphicsAPI_Init({ .device = device });
 
     bool show_demo_window = true;
     bool show_another_window = false;
@@ -66,25 +67,8 @@ int main() {
 
     while (RGFW_window_shouldClose(window) == RGFW_FALSE) {
         RGFW_pollEvents();
-
-        if (latest_completion.value >= 2) {
-            gpu::wait_timeline({ .semaphore = latest_completion.semaphore, .value = latest_completion.value - 1 });
-        }
-        gpu::CommandPool* command_pool = command_pools[latest_completion.value % 2];
-        gpu::reset_command_pool(command_pool);
-        gpu::CommandBuffer* commands = gpu::begin_commands(command_pool);
-        const gpu::SwapchainFrame frame = gpu::acquire(commands);
-        if (!frame.render_view) {
-            continue;  // HACK: skipping end_commands...
-        }
-        gpu::begin_render_pass(commands, {
-            .colors = { {.render_view = frame.render_view, .load = gpu::LoadOp::clear } },
-            });
-        gpu::bind_pso(commands, triangle_pso);
-        gpu::draw(commands, {}, 3);
-
-        ImGui_ImplNoGraphicsAPI_NewFrame();
         ImGui_ImplRgfw_NewFrame();
+        ImGui_ImplNoGraphicsAPI_NewFrame();
         ImGui::NewFrame();
 
         if (io.FontGlobalScale != ImGui_ImplRgfw_GetContentScaleForWindow(window)){
@@ -127,6 +111,27 @@ int main() {
         }
 
         ImGui::Render();
+
+        if (latest_completion.value >= 2) {
+            gpu::wait_timeline({ .semaphore = latest_completion.semaphore, .value = latest_completion.value - 1 });
+        }
+        gpu::uint64 frame_index = latest_completion.value % 2;
+        gpu::CommandPool* command_pool = command_pools[frame_index];
+        gpu::reset_command_pool(command_pool);
+        gpu::CommandBuffer* commands = gpu::begin_commands(command_pool);
+        const gpu::SwapchainFrame frame = gpu::acquire(commands);
+        if (!frame.render_view) {
+            gpu::end_commands(commands);
+            continue;  // TODO handle window resize, etc
+        }
+
+        ImGui_ImplNoGraphicsAPI_UpdateTextures(commands, ImGui::GetDrawData());
+
+        gpu::begin_render_pass(commands, {
+            .colors = { {.render_view = frame.render_view, .load = gpu::LoadOp::clear } },
+        });
+        gpu::bind_pso(commands, triangle_pso);
+        gpu::draw(commands, {}, 3);
         ImGui_ImplNoGraphicsAPI_RenderDrawData(commands, ImGui::GetDrawData());
 
         gpu::end_render_pass(commands);

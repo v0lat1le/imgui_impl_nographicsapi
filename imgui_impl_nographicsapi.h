@@ -17,6 +17,7 @@ struct ImGui_ImplNoGraphicsAPI_InitInfo {
 
 IMGUI_IMPL_API void ImGui_ImplNoGraphicsAPI_Init(const ImGui_ImplNoGraphicsAPI_InitInfo& init_info);
 IMGUI_IMPL_API void ImGui_ImplNoGraphicsAPI_NewFrame();
+IMGUI_IMPL_API void ImGui_ImplNoGraphicsAPI_UpdateTextures(gpu::CommandBuffer* commands, ImDrawData* draw_data);
 IMGUI_IMPL_API void ImGui_ImplNoGraphicsAPI_RenderDrawData(gpu::CommandBuffer* commands, ImDrawData* draw_data);
 IMGUI_IMPL_API void ImGui_ImplNoGraphicsAPI_Shutdown();
 
