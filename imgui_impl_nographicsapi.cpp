@@ -109,9 +109,13 @@ namespace {
     }
 
     template<typename T>
-    gpu::GpuCpuRange<T> allocate(gpu::GpuCpuRange<gpu::byte>& heap, gpu::uint64 count=1, gpu::uint64 alignment=1) {
+    gpu::GpuCpuRange<T> allocate(gpu::GpuCpuRange<gpu::byte>& heap, gpu::uint64 count=1, gpu::uint64 alignment=1, gpu::uint64 size_alignment=1) {
         gpu::uint64 size = sizeof(T)*count;
-        size_t align_delta = reinterpret_cast<gpu::uint64>(heap.gpu) & (alignment - 1);
+        gpu::uint64 size_align_delta = size & (size_alignment - 1);
+        if (size_align_delta > 0) {
+            size += size_alignment - size_align_delta;
+        }
+        gpu::uint64 align_delta = reinterpret_cast<gpu::uint64>(heap.gpu) & (alignment - 1);
         if (align_delta > 0) {
             align_delta = alignment - align_delta;
         }
@@ -242,8 +246,8 @@ IMGUI_IMPL_API void ImGui_ImplNoGraphicsAPI_RenderDrawData(gpu::CommandBuffer* c
     gpu::set_sampler_descriptor_heap(commands, bd->sampler_descriptor_heap);
 
     for (const ImDrawList* draw_list: draw_data->CmdLists) {
-        gpu::GpuCpuRange<ImDrawVert> vertices = allocate<ImDrawVert>(frame_heap, draw_list->VtxBuffer.Size, 4);
-        gpu::GpuCpuRange<ImDrawIdx> indices = allocate<ImDrawIdx>(frame_heap, draw_list->IdxBuffer.Size, 4);
+        gpu::GpuCpuRange<ImDrawVert> vertices = allocate<ImDrawVert>(frame_heap, draw_list->VtxBuffer.Size, 4, 4);
+        gpu::GpuCpuRange<ImDrawIdx> indices = allocate<ImDrawIdx>(frame_heap, draw_list->IdxBuffer.Size, 4, 4);
         memcpy(vertices.cpu, draw_list->VtxBuffer.Data, draw_list->VtxBuffer.Size * sizeof(ImDrawVert));
         memcpy(indices.cpu, draw_list->IdxBuffer.Data, draw_list->IdxBuffer.Size * sizeof(ImDrawIdx));
 
