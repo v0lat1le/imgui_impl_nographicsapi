@@ -8,9 +8,9 @@ struct ImDrawVert {
 
 struct ImGuiRoot {
 	ImDrawVert* vertices;
-    float2 scale;
-    float2 translate;
 	uint texture_id;
+    uint padding;
+    float4 scale_translate;
 };
 
 struct VertexOutput {
@@ -34,7 +34,7 @@ VertexOutput vertexMain(uint vertex_id: SV_VulkanVertexID) {
     VertexOutput output;
     ImDrawVert vertex = root.vertices[vertex_id];
 	output.color = unpack_color(vertex.col);
-	output.position = float4(vertex.pos*root.scale+root.translate, 0, 1);
+	output.position = float4(vertex.pos*root.scale_translate.xy+root.scale_translate.zw, 0, 1);
 	output.uv = vertex.uv;
     return output;
 }

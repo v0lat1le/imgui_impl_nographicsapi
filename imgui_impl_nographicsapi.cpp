@@ -4,9 +4,10 @@
 namespace {
     struct ImGuiRoot {
         ImDrawVert* vertices;
+        gpu::uint32 texture_id;
+        gpu::uint32 padding;
         ImVec2 scale;
         ImVec2 translate;
-        gpu::uint32 texture_id;
     };
 
     struct ImGui_ImplNoGraphicsAPI_FrameData {
@@ -116,7 +117,7 @@ namespace {
 
     template<typename T>
     T max(T lhs, T rhs) {
-        return lhs < rhs ? lhs : rhs;
+        return lhs > rhs ? lhs : rhs;
     }
 
     byte shader_code[] = {
@@ -222,8 +223,8 @@ IMGUI_IMPL_API void ImGui_ImplNoGraphicsAPI_RenderDrawData(gpu::CommandBuffer* c
     gpu::set_sampler_descriptor_heap(commands, bd->sampler_descriptor_heap);
 
     for (const ImDrawList* draw_list: draw_data->CmdLists) {
-        gpu::GpuCpuRange<ImDrawVert> vertices = allocate<ImDrawVert>(frame_heap, draw_list->VtxBuffer.Size);
-        gpu::GpuCpuRange<ImDrawIdx> indices = allocate<ImDrawIdx>(frame_heap, draw_list->IdxBuffer.Size);
+        gpu::GpuCpuRange<ImDrawVert> vertices = allocate<ImDrawVert>(frame_heap, draw_list->VtxBuffer.Size, 4);
+        gpu::GpuCpuRange<ImDrawIdx> indices = allocate<ImDrawIdx>(frame_heap, draw_list->IdxBuffer.Size, 4);
         memcpy(vertices.cpu, draw_list->VtxBuffer.Data, draw_list->VtxBuffer.Size * sizeof(ImDrawVert));
         memcpy(indices.cpu, draw_list->IdxBuffer.Data, draw_list->IdxBuffer.Size * sizeof(ImDrawIdx));
 

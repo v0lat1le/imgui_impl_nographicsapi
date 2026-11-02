@@ -26,3 +26,6 @@ target_include_directories(imgui PUBLIC ${EXTERNAL_DIR}/imgui ${EXTERNAL_DIR}/im
 add_executable (main "main.cpp" "imgui_impl_nographicsapi.cpp")
 target_include_directories(main PRIVATE ${EXTERNAL_DIR}/RGFW ${EXTERNAL_DIR}/imgui_impl_rgfw)
 target_link_libraries(main PRIVATE imgui NoGraphicsAPI::NoGraphicsAPI)
+if(APPLE)
+    target_link_libraries(main PRIVATE "-framework Cocoa")
+endif()

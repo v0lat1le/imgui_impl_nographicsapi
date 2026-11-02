@@ -27,18 +27,45 @@ void convert_imgui_style_to_linear_HACK() {
     ImGuiStyle& style = ImGui::GetStyle();
     for (int i = 0; i < ImGuiCol_COUNT; i++) {
         ImVec4& col = style.Colors[i];
-        col.x = srgb_to_linear(col.x*col.w)/col.w;
-        col.y = srgb_to_linear(col.y*col.w)/col.w;
-        col.z = srgb_to_linear(col.z*col.w)/col.w;
+        if (col.w != 0.0f) {
+            col.x = srgb_to_linear(col.x*col.w)/col.w;
+            col.y = srgb_to_linear(col.y*col.w)/col.w;
+            col.z = srgb_to_linear(col.z*col.w)/col.w;
+        }
     }
 }
+
+#ifdef __APPLE__
+    id get_metal_layer(RGFW_window* window) {
+        void* view = RGFW_window_getView_OSX(window);
+        return ((id (*)(id, SEL))objc_msgSend)((id)view, sel_getUid("layer"));
+    }
+    void* init_surface(RGFW_window* window) {
+        RGFW_window_setLayer_OSX(window, RGFW_getLayer_OSX());
+        return get_metal_layer(window);
+    }
+
+    void update_surface(RGFW_window* window) {
+        id layer = get_metal_layer(window);
+        ((void (*)(id, SEL, CGFloat))objc_msgSend)(layer, sel_registerName("setContentsScale:"), RGFW_window_getMonitor(window)->pixelRatio);
+
+        i32 pixel_width, pixel_height;
+        RGFW_window_getSizeInPixels(window, &pixel_width, &pixel_height);
+        ((void (*)(id, SEL, CGSize))objc_msgSend)(layer, sel_registerName("setDrawableSize:"), CGSizeMake(pixel_width, pixel_height));
+    }
+#else
+    void* init_surface(RGFW_window* window) {
+        return RGFW_window_getHWND(window);
+    }
+    void update_surface(RGFW_window* window) {}
+#endif
 
 int main() {
     RGFW_init("fmm", 0);
     RGFW_windowFlags window_flags = RGFW_windowCenter | RGFW_windowScaleToMonitor;
     RGFW_window* window = RGFW_createWindow("imgui-nographicsapi", 0, 0, 800, 600, window_flags);
 
-    gpu::Device* device = gpu::create_device({ .window = window->src.window, .swapchain_format = gpu::Format::bgra8_srgb }).device;
+    gpu::Device* device = gpu::create_device({ .window = init_surface(window), .swapchain_format = gpu::Format::bgra8_srgb }).device;
     gpu::PSO* triangle_pso = gpu::create_graphics_pso(device, {
         .vertex = {.code = {vertex_code, sizeof(vertex_code)}, .entry_point = "vertexMain"},
         .fragment = {.code = {fragment_code, sizeof(fragment_code)}, .entry_point = "fragmentMain"},
@@ -67,6 +94,7 @@ int main() {
 
     while (RGFW_window_shouldClose(window) == RGFW_FALSE) {
         RGFW_pollEvents();
+        update_surface(window);
         ImGui_ImplRgfw_NewFrame();
         ImGui_ImplNoGraphicsAPI_NewFrame();
         ImGui::NewFrame();
