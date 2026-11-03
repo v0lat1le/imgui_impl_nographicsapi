@@ -13,25 +13,22 @@ namespace {
     struct ImGui_ImplNoGraphicsAPI_Data {
         ImGui_ImplNoGraphicsAPI_InitInfo init_info;
         gpu::PSO* pso;
-        gpu::TextureHeap texture_heap;
-        gpu::TextureDescriptorHeap* texture_descriptor_heap;
-        gpu::SamplerDescriptorHeap* sampler_descriptor_heap;
     };
 
     ImGui_ImplNoGraphicsAPI_Data* ImGui_ImplNoGraphicsAPI_GetBackendData() {
         return ImGui::GetCurrentContext() ? static_cast<ImGui_ImplNoGraphicsAPI_Data*>(ImGui::GetIO().BackendRendererUserData) : nullptr;
     }
 
-    void ImGui_ImplNoGraphicsAPI_DrawCallback_ResetRenderState(const ImDrawList* parent_list, const ImDrawCmd* cmd) {
+    void ImGui_ImplNoGraphicsAPI_DrawCallback_ResetRenderState(const ImDrawList*, const ImDrawCmd*) {
     }
 
-    void ImGui_ImplNoGraphicsAPI_DrawCallback_SetSamplerLinear(const ImDrawList* parent_list, const ImDrawCmd* cmd) {
+    void ImGui_ImplNoGraphicsAPI_DrawCallback_SetSamplerLinear(const ImDrawList*, const ImDrawCmd*) {
         ImGui_ImplNoGraphicsAPI_Data* bd = ImGui_ImplNoGraphicsAPI_GetBackendData();
         ImGui_ImplNoGraphicsAPI_RenderState* render_state = static_cast<ImGui_ImplNoGraphicsAPI_RenderState*>(ImGui::GetPlatformIO().Renderer_RenderState);
         render_state->sampler_slot = bd->init_info.linear_sampler_slot;
     }
 
-    void ImGui_ImplNoGraphicsAPI_DrawCallback_SetSamplerNearest(const ImDrawList* parent_list, const ImDrawCmd* cmd) {
+    void ImGui_ImplNoGraphicsAPI_DrawCallback_SetSamplerNearest(const ImDrawList*, const ImDrawCmd*) {
         ImGui_ImplNoGraphicsAPI_Data* bd = ImGui_ImplNoGraphicsAPI_GetBackendData();
         ImGui_ImplNoGraphicsAPI_RenderState* render_state = static_cast<ImGui_ImplNoGraphicsAPI_RenderState*>(ImGui::GetPlatformIO().Renderer_RenderState);
         render_state->sampler_slot = bd->init_info.nearest_sampler_slot;
@@ -49,19 +46,11 @@ namespace {
                     .format = tex->Format == ImTextureFormat_RGBA32 ? gpu::Format::rgba8_unorm : gpu::Format::r8_unorm,
                     .usage = gpu::TextureUsage::sampled | gpu::TextureUsage::transfer_destination,
             };
-            gpu::Texture* texture = gpu::create_texture(bd->init_info.device, desc, bd->texture_heap, 0);
-            gpu::uint32 texture_slot = 0;
+            ImGui_ImplNoGraphicsAPI_Texture backend_texture = bd->init_info.create_texture(bd->init_info.user_data, desc);
+            gpu::initialize_texture(commands, backend_texture.texture);
 
-            gpu::initialize_texture(commands, texture);
-            gpu::write_texture_descriptor(bd->texture_descriptor_heap, texture_slot, texture, gpu::TextureDescriptorType::sampled);
-            gpu::write_sampler_descriptor(bd->sampler_descriptor_heap, texture_slot, {
-                .min_filter = gpu::Filter::linear,
-                .mag_filter = gpu::Filter::linear,
-                .address_u = gpu::AddressMode::clamp_to_edge,
-                .address_v = gpu::AddressMode::clamp_to_edge,
-            });
-            tex->SetTexID(texture_slot+1);
-            tex->BackendUserData = texture;
+            tex->SetTexID(backend_texture.slot+1);
+            tex->BackendUserData = backend_texture.texture;
         }
 
         if (tex->Status == ImTextureStatus_WantCreate || tex->Status == ImTextureStatus_WantUpdates) {
@@ -73,7 +62,7 @@ namespace {
             const gpu::uint32 upload_h = (tex->Status == ImTextureStatus_WantCreate) ? tex->Height : tex->UpdateRect.h;
 
             gpu::uint64 texture_size = upload_h*upload_w*tex->BytesPerPixel;
-            gpu::GpuCpuRange<byte> staging_memory = bd->init_info.allocate_frame_memory(bd->init_info.user_data, texture_size, 1);
+            gpu::GpuCpuRange<byte> staging_memory = bd->init_info.allocate_frame_memory(bd->init_info.user_data, texture_size, 4);
             for (gpu::uint32 y = 0; y < upload_h; y++) {
                 memcpy(staging_memory.cpu + y*upload_w*tex->BytesPerPixel, tex->GetPixelsAt(upload_x, upload_y + y), upload_w*tex->BytesPerPixel);
             }
@@ -86,8 +75,14 @@ namespace {
             tex->SetStatus(ImTextureStatus_OK);
         }
 
-        if (tex->Status == ImTextureStatus_WantDestroy /*&& tex->UnusedFrames >= (int)bd->init_info.image_count*/) {
-            gpu::destroy_texture(static_cast<gpu::Texture*>(tex->BackendUserData));
+        if (tex->Status == ImTextureStatus_WantDestroy) {
+            bd->init_info.destroy_texture(bd->init_info.user_data, {
+                static_cast<gpu::Texture*>(tex->BackendUserData),
+                static_cast<gpu::uint32>(tex->GetTexID()-1)
+            });
+            tex->SetTexID(ImTextureID_Invalid);
+            tex->BackendUserData = nullptr;
+            tex->SetStatus(ImTextureStatus_Destroyed);
         }
     }
 
@@ -134,10 +129,6 @@ IMGUI_IMPL_API void ImGui_ImplNoGraphicsAPI_Init(const ImGui_ImplNoGraphicsAPI_I
 
     ImGui_ImplNoGraphicsAPI_Data* bd = IM_NEW(ImGui_ImplNoGraphicsAPI_Data)();
     bd->init_info = init_info;
-    const gpu::uint64 frame_heap_size = 256*1024;
-    bd->texture_heap = gpu::create_texture_heap(init_info.device, 1024*1024);
-    bd->texture_descriptor_heap = gpu::create_texture_descriptor_heap(init_info.device, 4);
-    bd->sampler_descriptor_heap = gpu::create_sampler_descriptor_heap(init_info.device, 4);
     bd->pso = gpu::create_graphics_pso(init_info.device, {
         .vertex = {.code={shader_code, sizeof(shader_code)}, .entry_point="vertexMain"},
         .fragment = {.code={shader_code, sizeof(shader_code)}, .entry_point="fragmentMain"},
@@ -206,8 +197,6 @@ IMGUI_IMPL_API void ImGui_ImplNoGraphicsAPI_RenderDrawData(gpu::CommandBuffer* c
         .width = static_cast<float>(fb_width),
         .height = static_cast<float>(fb_height)
     });
-    gpu::set_texture_descriptor_heap(commands, bd->texture_descriptor_heap);
-    gpu::set_sampler_descriptor_heap(commands, bd->sampler_descriptor_heap);
 
     for (const ImDrawList* draw_list: draw_data->CmdLists) {
         gpu::GpuCpuRange<ImDrawVert> vertices = allocate<ImDrawVert>(bd, draw_list->VtxBuffer.Size * sizeof(ImDrawVert));
@@ -227,8 +216,6 @@ IMGUI_IMPL_API void ImGui_ImplNoGraphicsAPI_RenderDrawData(gpu::CommandBuffer* c
                         .width = static_cast<float>(fb_width),
                         .height = static_cast<float>(fb_height)
                     });
-                    gpu::set_texture_descriptor_heap(commands, bd->texture_descriptor_heap);
-                    gpu::set_sampler_descriptor_heap(commands, bd->sampler_descriptor_heap);
                 } else {
                     pcmd->UserCallback(draw_list, pcmd);
                 }
@@ -285,11 +272,11 @@ IMGUI_IMPL_API void ImGui_ImplNoGraphicsAPI_Shutdown() {
     ImGuiPlatformIO& platform_io = ImGui::GetPlatformIO();
 
     gpu::destroy_pso(bd->pso);
-    gpu::destroy_texture_heap(bd->texture_heap);
-    gpu::destroy_texture_descriptor_heap(bd->texture_descriptor_heap);
-    gpu::destroy_sampler_descriptor_heap(bd->sampler_descriptor_heap);
     for (ImTextureData* tex: platform_io.Textures) {
-        gpu::destroy_texture(static_cast<gpu::Texture*>(tex->BackendUserData));
+        bd->init_info.destroy_texture(bd->init_info.user_data, {
+            static_cast<gpu::Texture*>(tex->BackendUserData),
+            static_cast<gpu::uint32>(tex->GetTexID()-1)
+        });
     }
 
     io.BackendRendererName = nullptr;

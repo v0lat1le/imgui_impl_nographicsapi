@@ -74,12 +74,34 @@ int main() {
 
     gpu::TimelinePoint latest_completion{ .semaphore = gpu::create_timeline_semaphore(device) };
     gpu::CommandPool* command_pools[] = { gpu::create_command_pool(device), gpu::create_command_pool(device) };
-    gpu::GpuHeap heap = gpu::create_gpu_heap(device, 64*1024*1024);
+    gpu::GpuHeap heap = gpu::create_gpu_heap(device, 32*1024*1024);
+
+    gpu::TextureHeap texture_heap = gpu::create_texture_heap(device, 4*1024*1024);
+    gpu::TextureDescriptorHeap* texture_descriptor_heap = gpu::create_texture_descriptor_heap(device, 4);
+    gpu::SamplerDescriptorHeap* sampler_descriptor_heap = gpu::create_sampler_descriptor_heap(device, 2);
+
+    gpu::write_sampler_descriptor(sampler_descriptor_heap, 0, {
+        .min_filter = gpu::Filter::nearest,
+        .mag_filter = gpu::Filter::nearest,
+        .address_u = gpu::AddressMode::clamp_to_edge,
+        .address_v = gpu::AddressMode::clamp_to_edge,
+    });
+    gpu::write_sampler_descriptor(sampler_descriptor_heap, 1, {
+        .min_filter = gpu::Filter::linear,
+        .mag_filter = gpu::Filter::linear,
+        .address_u = gpu::AddressMode::clamp_to_edge,
+        .address_v = gpu::AddressMode::clamp_to_edge,
+    });
 
     struct BackendUserData {
+        gpu::Device* device;
         gpu::GpuCpuRange<byte> frame_heap;
+        gpu::TextureHeap texture_heap;
+        gpu::uint64 texture_heap_offset = 0;
+        gpu::TextureDescriptorHeap* texture_descriptor_heap;
+        gpu::uint32 texture_slot = 0;
     };
-    BackendUserData user_data {};
+    BackendUserData user_data {.device = device, .texture_heap = texture_heap, .texture_descriptor_heap = texture_descriptor_heap };
 
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
@@ -94,6 +116,8 @@ int main() {
     ImGui_ImplRgfw_InitForOther(window, true);
     ImGui_ImplNoGraphicsAPI_Init({
         .device = device,
+        .nearest_sampler_slot = 0,
+        .linear_sampler_slot = 1,
         .user_data = &user_data,
         .allocate_frame_memory = [](void* user_data, gpu::uint64 size, gpu::uint64 alignment) {
             BackendUserData* backend_data = static_cast<BackendUserData*>(user_data);
@@ -112,6 +136,18 @@ int main() {
             backend_data->frame_heap.size -= size + align_offset;
             return result;
         },
+        .create_texture = [](void* user_data, const gpu::TextureDesc& desc) {
+            BackendUserData* backend_data = static_cast<BackendUserData*>(user_data);
+            const gpu::SizeAlign texture_size = gpu::get_texture_size_align(backend_data->device, desc);
+            gpu::Texture* texture = gpu::create_texture(backend_data->device, desc, backend_data->texture_heap, backend_data->texture_heap_offset);
+            backend_data->texture_heap_offset += texture_size.size;
+            gpu::uint32 texture_slot = backend_data->texture_slot++;
+            gpu::write_texture_descriptor(backend_data->texture_descriptor_heap, texture_slot, texture, gpu::TextureDescriptorType::sampled);
+            return ImGui_ImplNoGraphicsAPI_Texture{ texture, texture_slot };
+        },
+        .destroy_texture = [](void* user_data, const ImGui_ImplNoGraphicsAPI_Texture& texture) {
+            gpu::destroy_texture(texture.texture);
+        }
     });
 
     bool show_demo_window = true;
@@ -179,13 +215,15 @@ int main() {
             continue;  // TODO handle window resize, etc
         }
 
-        user_data = { .frame_heap = {
+        user_data.frame_heap = {
             .cpu = heap.range.cpu + frame_index*heap.range.size/2,
             .gpu = heap.range.gpu + frame_index*heap.range.size/2,
             .size = heap.range.size/2,
-        } };
+        };
         ImGui_ImplNoGraphicsAPI_UpdateTextures(commands, ImGui::GetDrawData());
 
+        gpu::set_texture_descriptor_heap(commands, texture_descriptor_heap);
+        gpu::set_sampler_descriptor_heap(commands, sampler_descriptor_heap);
         gpu::begin_render_pass(commands, {
             .colors = { {.render_view = frame.render_view, .load = gpu::LoadOp::clear } },
         });
@@ -206,6 +244,9 @@ int main() {
     ImGui::DestroyContext();
 
     gpu::destroy_gpu_heap(heap);
+    gpu::destroy_texture_heap(texture_heap);
+    gpu::destroy_texture_descriptor_heap(texture_descriptor_heap);
+    gpu::destroy_sampler_descriptor_heap(sampler_descriptor_heap);
     gpu::destroy_command_pool(command_pools[1]);
     gpu::destroy_command_pool(command_pools[0]);
     gpu::destroy_timeline_semaphore(latest_completion.semaphore);
