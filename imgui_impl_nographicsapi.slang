@@ -8,8 +8,8 @@ struct ImDrawVert {
 
 struct ImGuiRoot {
 	ImDrawVert* vertices;
-	uint texture_id;
-    uint padding;
+	uint texture_slot;
+    uint sampler_slot;
     float4 scale_translate;
 };
 
@@ -46,7 +46,7 @@ struct FragmentInput {
 
 [shader("fragment")]
 float4 fragmentMain(FragmentInput input): SV_Target0 {
-    Texture2D<float4> texture = gpu_texture<Texture2D<float4>>(root.texture_id);
-    SamplerState sampler = gpu_sampler(root.texture_id);
+    Texture2D<float4> texture = gpu_texture<Texture2D<float4>>(root.texture_slot);
+    SamplerState sampler = gpu_sampler(root.sampler_slot);
 	return input.color*texture.Sample(sampler, input.uv);
 }

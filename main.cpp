@@ -74,6 +74,12 @@ int main() {
 
     gpu::TimelinePoint latest_completion{ .semaphore = gpu::create_timeline_semaphore(device) };
     gpu::CommandPool* command_pools[] = { gpu::create_command_pool(device), gpu::create_command_pool(device) };
+    gpu::GpuHeap heap = gpu::create_gpu_heap(device, 64*1024*1024);
+
+    struct BackendUserData {
+        gpu::GpuCpuRange<byte> frame_heap;
+    };
+    BackendUserData user_data {};
 
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
@@ -86,7 +92,27 @@ int main() {
     convert_imgui_style_to_linear_HACK();  // TODO: do this in the shader?
 
     ImGui_ImplRgfw_InitForOther(window, true);
-    ImGui_ImplNoGraphicsAPI_Init({ .device = device });
+    ImGui_ImplNoGraphicsAPI_Init({
+        .device = device,
+        .user_data = &user_data,
+        .allocate_frame_memory = [](void* user_data, gpu::uint64 size, gpu::uint64 alignment) {
+            BackendUserData* backend_data = static_cast<BackendUserData*>(user_data);
+            gpu::uint64 align_offset = reinterpret_cast<gpu::uint64>(backend_data->frame_heap.gpu) & (alignment - 1);
+            if (align_offset > 0) {
+                align_offset = alignment - align_offset;
+            }
+            IM_ASSERT(backend_data->frame_heap.size >= size + align_offset);
+            gpu::GpuCpuRange<byte> result = {
+                .cpu = backend_data->frame_heap.cpu + align_offset,
+                .gpu = backend_data->frame_heap.gpu + align_offset,
+                .size = size,
+            };
+            backend_data->frame_heap.cpu += size + align_offset;
+            backend_data->frame_heap.gpu += size + align_offset;
+            backend_data->frame_heap.size -= size + align_offset;
+            return result;
+        },
+    });
 
     bool show_demo_window = true;
     bool show_another_window = false;
@@ -153,6 +179,11 @@ int main() {
             continue;  // TODO handle window resize, etc
         }
 
+        user_data = { .frame_heap = {
+            .cpu = heap.range.cpu + frame_index*heap.range.size/2,
+            .gpu = heap.range.gpu + frame_index*heap.range.size/2,
+            .size = heap.range.size/2,
+        } };
         ImGui_ImplNoGraphicsAPI_UpdateTextures(commands, ImGui::GetDrawData());
 
         gpu::begin_render_pass(commands, {
@@ -174,6 +205,7 @@ int main() {
     ImGui_ImplRgfw_Shutdown();
     ImGui::DestroyContext();
 
+    gpu::destroy_gpu_heap(heap);
     gpu::destroy_command_pool(command_pools[1]);
     gpu::destroy_command_pool(command_pools[0]);
     gpu::destroy_timeline_semaphore(latest_completion.semaphore);

@@ -4,25 +4,18 @@
 namespace {
     struct ImGuiRoot {
         ImDrawVert* vertices;
-        gpu::uint32 texture_id;
-        gpu::uint32 padding;
+        gpu::uint32 texture_slot;
+        gpu::uint32 sampler_slot;
         ImVec2 scale;
         ImVec2 translate;
-    };
-
-    struct ImGui_ImplNoGraphicsAPI_FrameData {
-        gpu::GpuCpuRange<byte> heap;
     };
 
     struct ImGui_ImplNoGraphicsAPI_Data {
         ImGui_ImplNoGraphicsAPI_InitInfo init_info;
         gpu::PSO* pso;
-        gpu::GpuHeap heap;
         gpu::TextureHeap texture_heap;
         gpu::TextureDescriptorHeap* texture_descriptor_heap;
         gpu::SamplerDescriptorHeap* sampler_descriptor_heap;
-        ImVector<ImGui_ImplNoGraphicsAPI_FrameData> frame_data;
-        int frame_index = 0;
     };
 
     ImGui_ImplNoGraphicsAPI_Data* ImGui_ImplNoGraphicsAPI_GetBackendData() {
@@ -34,25 +27,17 @@ namespace {
 
     void ImGui_ImplNoGraphicsAPI_DrawCallback_SetSamplerLinear(const ImDrawList* parent_list, const ImDrawCmd* cmd) {
         ImGui_ImplNoGraphicsAPI_Data* bd = ImGui_ImplNoGraphicsAPI_GetBackendData();
-        gpu::write_sampler_descriptor(bd->sampler_descriptor_heap, cmd->GetTexID()-1, {
-            .min_filter = gpu::Filter::linear,
-            .mag_filter = gpu::Filter::linear,
-            .address_u = gpu::AddressMode::clamp_to_edge,
-            .address_v = gpu::AddressMode::clamp_to_edge,
-        });
+        ImGui_ImplNoGraphicsAPI_RenderState* render_state = static_cast<ImGui_ImplNoGraphicsAPI_RenderState*>(ImGui::GetPlatformIO().Renderer_RenderState);
+        render_state->sampler_slot = bd->init_info.linear_sampler_slot;
     }
 
     void ImGui_ImplNoGraphicsAPI_DrawCallback_SetSamplerNearest(const ImDrawList* parent_list, const ImDrawCmd* cmd) {
         ImGui_ImplNoGraphicsAPI_Data* bd = ImGui_ImplNoGraphicsAPI_GetBackendData();
-        gpu::write_sampler_descriptor(bd->sampler_descriptor_heap, cmd->GetTexID()-1, {
-            .min_filter = gpu::Filter::linear,
-            .mag_filter = gpu::Filter::linear,
-            .address_u = gpu::AddressMode::clamp_to_edge,
-            .address_v = gpu::AddressMode::clamp_to_edge,
-        });
+        ImGui_ImplNoGraphicsAPI_RenderState* render_state = static_cast<ImGui_ImplNoGraphicsAPI_RenderState*>(ImGui::GetPlatformIO().Renderer_RenderState);
+        render_state->sampler_slot = bd->init_info.nearest_sampler_slot;
     }
 
-    void ImGui_ImplNoGraphicsAPI_UpdateTexture(ImTextureData* tex, gpu::CommandBuffer* commands, gpu::GpuCpuRange<byte>& frame_heap) {
+    void ImGui_ImplNoGraphicsAPI_UpdateTexture(ImTextureData* tex, gpu::CommandBuffer* commands) {
         if (tex->Status == ImTextureStatus_OK) {
             return;
         }
@@ -65,17 +50,17 @@ namespace {
                     .usage = gpu::TextureUsage::sampled | gpu::TextureUsage::transfer_destination,
             };
             gpu::Texture* texture = gpu::create_texture(bd->init_info.device, desc, bd->texture_heap, 0);
-            gpu::uint32 texture_id = 0;
+            gpu::uint32 texture_slot = 0;
 
             gpu::initialize_texture(commands, texture);
-            gpu::write_texture_descriptor(bd->texture_descriptor_heap, texture_id, texture, gpu::TextureDescriptorType::sampled);
-            gpu::write_sampler_descriptor(bd->sampler_descriptor_heap, texture_id, {
-                .min_filter = gpu::Filter::nearest,
-                .mag_filter = gpu::Filter::nearest,
+            gpu::write_texture_descriptor(bd->texture_descriptor_heap, texture_slot, texture, gpu::TextureDescriptorType::sampled);
+            gpu::write_sampler_descriptor(bd->sampler_descriptor_heap, texture_slot, {
+                .min_filter = gpu::Filter::linear,
+                .mag_filter = gpu::Filter::linear,
                 .address_u = gpu::AddressMode::clamp_to_edge,
                 .address_v = gpu::AddressMode::clamp_to_edge,
             });
-            tex->SetTexID(texture_id+1);
+            tex->SetTexID(texture_slot+1);
             tex->BackendUserData = texture;
         }
 
@@ -88,49 +73,42 @@ namespace {
             const gpu::uint32 upload_h = (tex->Status == ImTextureStatus_WantCreate) ? tex->Height : tex->UpdateRect.h;
 
             gpu::uint64 texture_size = upload_h*upload_w*tex->BytesPerPixel;
-            frame_heap.cpu += frame_heap.size - texture_size;
-            frame_heap.gpu += frame_heap.size - texture_size;
-            frame_heap.size = texture_size; // HACK: use the back of the frame buffer for the upload
+            gpu::GpuCpuRange<byte> staging_memory = bd->init_info.allocate_frame_memory(bd->init_info.user_data, texture_size, 1);
             for (gpu::uint32 y = 0; y < upload_h; y++) {
-                memcpy(frame_heap.cpu + y*upload_w*tex->BytesPerPixel, tex->GetPixelsAt(upload_x, upload_y + y), upload_w*tex->BytesPerPixel);
+                memcpy(staging_memory.cpu + y*upload_w*tex->BytesPerPixel, tex->GetPixelsAt(upload_x, upload_y + y), upload_w*tex->BytesPerPixel);
             }
 
             gpu::TextureCopyDesc copy {
                 .offset = { .x=upload_x, .y=upload_y },
                 .extent = { .x=upload_w, .y=upload_h }
             };
-            gpu::copy_memory_to_texture(commands, gpu::gpu_range(frame_heap), texture, copy);
+            gpu::copy_memory_to_texture(commands, gpu::gpu_range(staging_memory), texture, copy);
             tex->SetStatus(ImTextureStatus_OK);
         }
 
-        if (tex->Status == ImTextureStatus_WantDestroy && tex->UnusedFrames >= (int)bd->init_info.image_count) {
+        if (tex->Status == ImTextureStatus_WantDestroy /*&& tex->UnusedFrames >= (int)bd->init_info.image_count*/) {
             gpu::destroy_texture(static_cast<gpu::Texture*>(tex->BackendUserData));
         }
     }
 
     template<typename T>
-    gpu::GpuCpuRange<T> allocate(gpu::GpuCpuRange<gpu::byte>& heap, gpu::uint64 count=1, gpu::uint64 alignment=1, gpu::uint64 size_alignment=1) {
-        gpu::uint64 size = sizeof(T)*count;
-        gpu::uint64 size_align_delta = size & (size_alignment - 1);
-        if (size_align_delta > 0) {
-            size += size_alignment - size_align_delta;
-        }
-        gpu::uint64 align_delta = reinterpret_cast<gpu::uint64>(heap.gpu) & (alignment - 1);
+    gpu::GpuCpuRange<T> convert_range(gpu::GpuCpuRange<gpu::byte> heap) {
+        IM_ASSERT(heap.size % sizeof(T) == 0);
+        return { reinterpret_cast<T*>(heap.cpu), reinterpret_cast<T*>(heap.gpu), heap.size };
+    }
+
+    gpu::uint64 align_up(gpu::uint64 value, gpu::uint64 alignment) {
+        gpu::uint64 align_delta = value & (alignment - 1);
         if (align_delta > 0) {
-            align_delta = alignment - align_delta;
+            value += alignment - align_delta;
         }
-        if (size+align_delta > heap.size) {
-            return { nullptr, nullptr, 0 };
-        }
-        gpu::GpuCpuRange<T> result{
-            .cpu = reinterpret_cast<T*>(heap.cpu+align_delta),
-            .gpu = reinterpret_cast<T*>(heap.gpu+align_delta),
-            .size = size
-        };
-        heap.cpu += size+align_delta;
-        heap.gpu += size+align_delta;
-        heap.size -= size+align_delta;
-        return result;
+        return value;
+    }
+
+    template<typename T>
+    gpu::GpuCpuRange<T> allocate(ImGui_ImplNoGraphicsAPI_Data* bd, gpu::uint64 count=1, gpu::uint64 alignment=1, gpu::uint64 size_alignment=1) {
+        gpu::uint64 size = align_up(sizeof(T)*count, size_alignment);
+        return convert_range<T>(bd->init_info.allocate_frame_memory(bd->init_info.user_data, size, alignment));
     }
 
     template<typename T>
@@ -157,15 +135,9 @@ IMGUI_IMPL_API void ImGui_ImplNoGraphicsAPI_Init(const ImGui_ImplNoGraphicsAPI_I
     ImGui_ImplNoGraphicsAPI_Data* bd = IM_NEW(ImGui_ImplNoGraphicsAPI_Data)();
     bd->init_info = init_info;
     const gpu::uint64 frame_heap_size = 256*1024;
-    bd->heap = gpu::create_gpu_heap(init_info.device, frame_heap_size*init_info.image_count);
     bd->texture_heap = gpu::create_texture_heap(init_info.device, 1024*1024);
     bd->texture_descriptor_heap = gpu::create_texture_descriptor_heap(init_info.device, 4);
     bd->sampler_descriptor_heap = gpu::create_sampler_descriptor_heap(init_info.device, 4);
-    bd->frame_data.resize(init_info.image_count);
-    gpu::GpuCpuRange<byte> frame_heap = bd->heap.range;
-    for (ImGui_ImplNoGraphicsAPI_FrameData& frame_data: bd->frame_data) {
-        frame_data.heap = allocate<byte>(frame_heap, frame_heap_size);
-    }
     bd->pso = gpu::create_graphics_pso(init_info.device, {
         .vertex = {.code={shader_code, sizeof(shader_code)}, .entry_point="vertexMain"},
         .fragment = {.code={shader_code, sizeof(shader_code)}, .entry_point="fragmentMain"},
@@ -208,13 +180,8 @@ IMGUI_IMPL_API void ImGui_ImplNoGraphicsAPI_UpdateTextures(gpu::CommandBuffer* c
     if (draw_data->Textures == nullptr) {
         return;
     }
-
-    ImGui_ImplNoGraphicsAPI_Data* bd = ImGui_ImplNoGraphicsAPI_GetBackendData();
-    ImGui_ImplNoGraphicsAPI_FrameData& frame_data = bd->frame_data[bd->frame_index];
-    gpu::GpuCpuRange<gpu::byte> frame_heap = frame_data.heap;
-
     for (ImTextureData* tex: *draw_data->Textures) {
-        ImGui_ImplNoGraphicsAPI_UpdateTexture(tex, commands, frame_heap);
+        ImGui_ImplNoGraphicsAPI_UpdateTexture(tex, commands);
     }
 }
 
@@ -227,14 +194,11 @@ IMGUI_IMPL_API void ImGui_ImplNoGraphicsAPI_RenderDrawData(gpu::CommandBuffer* c
     }
 
     ImGui_ImplNoGraphicsAPI_Data* bd = ImGui_ImplNoGraphicsAPI_GetBackendData();
-    ImGui_ImplNoGraphicsAPI_FrameData& frame_data = bd->frame_data[bd->frame_index];
-    gpu::GpuCpuRange<gpu::byte> frame_heap = frame_data.heap;
-
     ImGuiPlatformIO& platform_io = ImGui::GetPlatformIO();
-    ImGui_ImplNoGraphicsAPI_RenderState render_state { .commands = commands, .pso = bd->pso };
+    ImGui_ImplNoGraphicsAPI_RenderState render_state { .commands = commands, .pso = bd->pso, .sampler_slot = bd->init_info.linear_sampler_slot };
     platform_io.Renderer_RenderState = &render_state;  // can be used by callbacks
 
-    gpu::bind_pso(commands, bd->pso);
+    gpu::bind_pso(commands, render_state.pso);
     gpu::set_depth_stencil(commands, {});
     gpu::set_viewport(commands, {
         .x = 0.0f,
@@ -246,8 +210,8 @@ IMGUI_IMPL_API void ImGui_ImplNoGraphicsAPI_RenderDrawData(gpu::CommandBuffer* c
     gpu::set_sampler_descriptor_heap(commands, bd->sampler_descriptor_heap);
 
     for (const ImDrawList* draw_list: draw_data->CmdLists) {
-        gpu::GpuCpuRange<ImDrawVert> vertices = allocate<ImDrawVert>(frame_heap, draw_list->VtxBuffer.Size, 4, 4);
-        gpu::GpuCpuRange<ImDrawIdx> indices = allocate<ImDrawIdx>(frame_heap, draw_list->IdxBuffer.Size, 4, 4);
+        gpu::GpuCpuRange<ImDrawVert> vertices = allocate<ImDrawVert>(bd, draw_list->VtxBuffer.Size * sizeof(ImDrawVert));
+        gpu::GpuCpuRange<ImDrawIdx> indices = allocate<ImDrawIdx>(bd, draw_list->IdxBuffer.Size * sizeof(ImDrawIdx), 4, 4);
         memcpy(vertices.cpu, draw_list->VtxBuffer.Data, draw_list->VtxBuffer.Size * sizeof(ImDrawVert));
         memcpy(indices.cpu, draw_list->IdxBuffer.Data, draw_list->IdxBuffer.Size * sizeof(ImDrawIdx));
 
@@ -255,7 +219,7 @@ IMGUI_IMPL_API void ImGui_ImplNoGraphicsAPI_RenderDrawData(gpu::CommandBuffer* c
             const ImDrawCmd* pcmd = &draw_list->CmdBuffer[cmd_i];
             if (pcmd->UserCallback != nullptr) {
                 if (pcmd->UserCallback == ImGui_ImplNoGraphicsAPI_DrawCallback_ResetRenderState) {
-                    gpu::bind_pso(commands, bd->pso);
+                    gpu::bind_pso(commands, render_state.pso);
                     gpu::set_depth_stencil(commands, {});
                     gpu::set_viewport(commands, {
                         .x = 0.0f,
@@ -287,11 +251,12 @@ IMGUI_IMPL_API void ImGui_ImplNoGraphicsAPI_RenderDrawData(gpu::CommandBuffer* c
                 .height = static_cast<gpu::uint32>(clip_max_y - clip_min_y)
             });
 
-            gpu::GpuCpuRange<ImGuiRoot> root = allocate<ImGuiRoot>(frame_heap, 1, 16);
+            gpu::GpuCpuRange<ImGuiRoot> root = allocate<ImGuiRoot>(bd, 1, 16);
             root.cpu->vertices = vertices.gpu;
             root.cpu->scale = { 2.0f / draw_data->DisplaySize.x, 2.0f / draw_data->DisplaySize.y };
             root.cpu->translate = { -1.0f - draw_data->DisplayPos.x * root.cpu->scale.x, -1.0f - draw_data->DisplayPos.y * root.cpu->scale.y };
-            root.cpu->texture_id = pcmd->GetTexID()-1;
+            root.cpu->texture_slot = pcmd->GetTexID()-1;
+            root.cpu->sampler_slot = render_state.sampler_slot;
             gpu::draw_indexed(
                 commands,
                 root.gpu,
@@ -311,7 +276,6 @@ IMGUI_IMPL_API void ImGui_ImplNoGraphicsAPI_RenderDrawData(gpu::CommandBuffer* c
         .width = fb_width,
         .height = fb_height
     });
-    bd->frame_index = (bd->frame_index+1) % bd->init_info.image_count;
 }
 
 IMGUI_IMPL_API void ImGui_ImplNoGraphicsAPI_Shutdown() {
@@ -321,7 +285,6 @@ IMGUI_IMPL_API void ImGui_ImplNoGraphicsAPI_Shutdown() {
     ImGuiPlatformIO& platform_io = ImGui::GetPlatformIO();
 
     gpu::destroy_pso(bd->pso);
-    gpu::destroy_gpu_heap(bd->heap);
     gpu::destroy_texture_heap(bd->texture_heap);
     gpu::destroy_texture_descriptor_heap(bd->texture_descriptor_heap);
     gpu::destroy_sampler_descriptor_heap(bd->sampler_descriptor_heap);
