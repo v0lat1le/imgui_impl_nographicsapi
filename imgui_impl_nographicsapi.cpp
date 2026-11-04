@@ -34,7 +34,7 @@ namespace {
         render_state->sampler_slot = bd->init_info.nearest_sampler_slot;
     }
 
-    void ImGui_ImplNoGraphicsAPI_UpdateTexture(ImTextureData* tex, gpu::CommandBuffer* commands) {
+    void ImGui_ImplNoGraphicsAPI_UpdateTexture(ImTextureData* tex) {
         if (tex->Status == ImTextureStatus_OK) {
             return;
         }
@@ -47,39 +47,33 @@ namespace {
                     .usage = gpu::TextureUsage::sampled | gpu::TextureUsage::transfer_destination,
             };
             ImGui_ImplNoGraphicsAPI_Texture backend_texture = bd->init_info.create_texture(bd->init_info.user_data, desc);
-            gpu::initialize_texture(commands, backend_texture.texture);
 
             tex->SetTexID(backend_texture.slot+1);
-            tex->BackendUserData = backend_texture.texture;
+            tex->BackendUserData = backend_texture.texture_data;
         }
 
         if (tex->Status == ImTextureStatus_WantCreate || tex->Status == ImTextureStatus_WantUpdates) {
-            gpu::Texture* texture = static_cast<gpu::Texture*>(tex->BackendUserData);
-
             const gpu::uint32 upload_x = (tex->Status == ImTextureStatus_WantCreate) ? 0 : tex->UpdateRect.x;
             const gpu::uint32 upload_y = (tex->Status == ImTextureStatus_WantCreate) ? 0 : tex->UpdateRect.y;
             const gpu::uint32 upload_w = (tex->Status == ImTextureStatus_WantCreate) ? tex->Width : tex->UpdateRect.w;
             const gpu::uint32 upload_h = (tex->Status == ImTextureStatus_WantCreate) ? tex->Height : tex->UpdateRect.h;
 
-            gpu::uint64 texture_size = upload_h*upload_w*tex->BytesPerPixel;
-            gpu::GpuCpuRange<byte> staging_memory = bd->init_info.allocate_frame_memory(bd->init_info.user_data, texture_size, 4);
-            for (gpu::uint32 y = 0; y < upload_h; y++) {
-                memcpy(staging_memory.cpu + y*upload_w*tex->BytesPerPixel, tex->GetPixelsAt(upload_x, upload_y + y), upload_w*tex->BytesPerPixel);
-            }
-
-            gpu::TextureCopyDesc copy {
+            gpu::TextureCopyDesc copy_desc {
                 .offset = { .x=upload_x, .y=upload_y },
-                .extent = { .x=upload_w, .y=upload_h }
+                .extent = { .x=upload_w, .y=upload_h },
+                .row_pitch_bytes = static_cast<gpu::uint64>(tex->Width*tex->BytesPerPixel),
             };
-            gpu::copy_memory_to_texture(commands, gpu::gpu_range(staging_memory), texture, copy);
+
+            ImGui_ImplNoGraphicsAPI_Texture backend_texture{ .slot = static_cast<gpu::uint32>(tex->GetTexID()-1), .texture_data = tex->BackendUserData };
+            byte* data = static_cast<gpu::byte*>(tex->GetPixelsAt(upload_x, upload_y));
+            byte* data_end = static_cast<gpu::byte*>(tex->GetPixelsAt(upload_x+upload_w, upload_y+upload_h-1));
+            gpu::Span<byte> upload_data{ data, static_cast<size_t>(data_end - data) };
+            bd->init_info.update_texture(bd->init_info.user_data, backend_texture, copy_desc, upload_data);
             tex->SetStatus(ImTextureStatus_OK);
         }
 
         if (tex->Status == ImTextureStatus_WantDestroy) {
-            bd->init_info.destroy_texture(bd->init_info.user_data, {
-                static_cast<gpu::Texture*>(tex->BackendUserData),
-                static_cast<gpu::uint32>(tex->GetTexID()-1)
-            });
+            bd->init_info.destroy_texture(bd->init_info.user_data, { .slot = static_cast<gpu::uint32>(tex->GetTexID()-1), .texture_data = tex->BackendUserData });
             tex->SetTexID(ImTextureID_Invalid);
             tex->BackendUserData = nullptr;
             tex->SetStatus(ImTextureStatus_Destroyed);
@@ -93,11 +87,7 @@ namespace {
     }
 
     gpu::uint64 align_up(gpu::uint64 value, gpu::uint64 alignment) {
-        gpu::uint64 align_delta = value & (alignment - 1);
-        if (align_delta > 0) {
-            value += alignment - align_delta;
-        }
-        return value;
+        return (value + alignment - 1) & ~(alignment - 1);
     }
 
     template<typename T>
@@ -167,12 +157,12 @@ IMGUI_IMPL_API void ImGui_ImplNoGraphicsAPI_NewFrame() {
     IM_UNUSED(bd);
 }
 
-IMGUI_IMPL_API void ImGui_ImplNoGraphicsAPI_UpdateTextures(gpu::CommandBuffer* commands, ImDrawData* draw_data) {
+IMGUI_IMPL_API void ImGui_ImplNoGraphicsAPI_UpdateTextures(ImDrawData* draw_data) {
     if (draw_data->Textures == nullptr) {
         return;
     }
     for (ImTextureData* tex: *draw_data->Textures) {
-        ImGui_ImplNoGraphicsAPI_UpdateTexture(tex, commands);
+        ImGui_ImplNoGraphicsAPI_UpdateTexture(tex);
     }
 }
 
@@ -182,6 +172,12 @@ IMGUI_IMPL_API void ImGui_ImplNoGraphicsAPI_RenderDrawData(gpu::CommandBuffer* c
     gpu::uint32 fb_height = static_cast<gpu::uint32>(draw_data->DisplaySize.y * draw_data->FramebufferScale.y + 0.5f);
     if (fb_width <= 0 || fb_height <= 0) {
         return;
+    }
+
+    if (draw_data->Textures != nullptr) {
+        for (ImTextureData* tex: *draw_data->Textures) {
+            IM_ASSERT(tex->Status != ImTextureStatus_WantCreate && tex->Status != ImTextureStatus_WantUpdates && "Texture not initialized! Initialize texture prior to calling ImGui_ImplNoGraphicsAPI_RenderDrawData!");
+        }
     }
 
     ImGui_ImplNoGraphicsAPI_Data* bd = ImGui_ImplNoGraphicsAPI_GetBackendData();
@@ -223,10 +219,10 @@ IMGUI_IMPL_API void ImGui_ImplNoGraphicsAPI_RenderDrawData(gpu::CommandBuffer* c
             }
 
             // Project scissor/clipping rectangles into framebuffer space, clamp to viewport
-            gpu::int32 clip_min_x = max<gpu::int32>(0, (pcmd->ClipRect.x-draw_data->DisplayPos.x)*draw_data->FramebufferScale.x);
-            gpu::int32 clip_min_y = max<gpu::int32>(0, (pcmd->ClipRect.y-draw_data->DisplayPos.y)*draw_data->FramebufferScale.y);
-            gpu::int32 clip_max_x = min<gpu::int32>(fb_width, (pcmd->ClipRect.z-draw_data->DisplayPos.x)*draw_data->FramebufferScale.x);
-            gpu::int32 clip_max_y = min<gpu::int32>(fb_height, (pcmd->ClipRect.w-draw_data->DisplayPos.y)*draw_data->FramebufferScale.y);
+            gpu::int32 clip_min_x = max<gpu::int32>(0, static_cast<gpu::int32>((pcmd->ClipRect.x-draw_data->DisplayPos.x)*draw_data->FramebufferScale.x));
+            gpu::int32 clip_min_y = max<gpu::int32>(0, static_cast<gpu::int32>((pcmd->ClipRect.y-draw_data->DisplayPos.y)*draw_data->FramebufferScale.y));
+            gpu::int32 clip_max_x = min<gpu::int32>(static_cast<gpu::int32>(fb_width), static_cast<gpu::int32>((pcmd->ClipRect.z-draw_data->DisplayPos.x)*draw_data->FramebufferScale.x));
+            gpu::int32 clip_max_y = min<gpu::int32>(static_cast<gpu::int32>(fb_height), static_cast<gpu::int32>((pcmd->ClipRect.w-draw_data->DisplayPos.y)*draw_data->FramebufferScale.y));
             if (clip_max_x <= clip_min_x || clip_max_y <= clip_min_y) {
                 continue;
             }
@@ -242,7 +238,7 @@ IMGUI_IMPL_API void ImGui_ImplNoGraphicsAPI_RenderDrawData(gpu::CommandBuffer* c
             root.cpu->vertices = vertices.gpu;
             root.cpu->scale = { 2.0f / draw_data->DisplaySize.x, 2.0f / draw_data->DisplaySize.y };
             root.cpu->translate = { -1.0f - draw_data->DisplayPos.x * root.cpu->scale.x, -1.0f - draw_data->DisplayPos.y * root.cpu->scale.y };
-            root.cpu->texture_slot = pcmd->GetTexID()-1;
+            root.cpu->texture_slot = static_cast<gpu::uint32>(pcmd->GetTexID()-1);
             root.cpu->sampler_slot = render_state.sampler_slot;
             gpu::draw_indexed(
                 commands,
@@ -273,10 +269,12 @@ IMGUI_IMPL_API void ImGui_ImplNoGraphicsAPI_Shutdown() {
 
     gpu::destroy_pso(bd->pso);
     for (ImTextureData* tex: platform_io.Textures) {
-        bd->init_info.destroy_texture(bd->init_info.user_data, {
-            static_cast<gpu::Texture*>(tex->BackendUserData),
-            static_cast<gpu::uint32>(tex->GetTexID()-1)
-        });
+        if (tex->Status != ImTextureStatus_Destroyed && tex->Status != ImTextureStatus_WantCreate) {
+            bd->init_info.destroy_texture(bd->init_info.user_data, {
+                .slot = static_cast<gpu::uint32>(tex->GetTexID()-1),
+                .texture_data = tex->BackendUserData,
+            });
+        }
     }
 
     io.BackendRendererName = nullptr;
@@ -284,4 +282,16 @@ IMGUI_IMPL_API void ImGui_ImplNoGraphicsAPI_Shutdown() {
     io.BackendFlags &= ~(ImGuiBackendFlags_RendererHasVtxOffset | ImGuiBackendFlags_RendererHasTextures);
     platform_io.ClearRendererHandlers();
     IM_DELETE(bd);
+}
+
+IMGUI_IMPL_API void ImGui_ImplNoGraphicsAPI_UpdateTexture(gpu::CommandBuffer* commands, gpu::Texture* texture, gpu::TextureCopyDesc copy_desc, gpu::Span<gpu::byte> data) {
+    ImGui_ImplNoGraphicsAPI_Data* bd = ImGui_ImplNoGraphicsAPI_GetBackendData();
+    gpu::uint64 byte_per_pixel = (data.size - copy_desc.row_pitch_bytes*(copy_desc.extent.y-1))/copy_desc.extent.x;  // HACK: This should be determined from the texture format
+    gpu::uint64 texture_size = byte_per_pixel * copy_desc.extent.x * copy_desc.extent.y;
+    gpu::GpuCpuRange<byte> staging_memory = bd->init_info.allocate_frame_memory(bd->init_info.user_data, texture_size, 4);
+    for (gpu::uint32 y = 0; y < copy_desc.extent.y; y++) {
+        memcpy(staging_memory.cpu + y*copy_desc.extent.x*byte_per_pixel, data.data + y*copy_desc.row_pitch_bytes, copy_desc.extent.x*byte_per_pixel);
+    }
+    copy_desc.row_pitch_bytes = 0;
+    gpu::copy_memory_to_texture(commands, gpu::gpu_range(staging_memory), texture, copy_desc);
 }

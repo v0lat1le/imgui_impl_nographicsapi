@@ -57,7 +57,7 @@ void convert_imgui_style_to_linear_HACK() {
     void* init_surface(RGFW_window* window) {
         return RGFW_window_getHWND(window);
     }
-    void update_surface(RGFW_window* window) {}
+    void update_surface(RGFW_window* /*window*/) {}
 #endif
 
 int main() {
@@ -95,6 +95,7 @@ int main() {
 
     struct BackendUserData {
         gpu::Device* device;
+        gpu::CommandBuffer* commands;
         gpu::GpuCpuRange<byte> frame_heap;
         gpu::TextureHeap texture_heap;
         gpu::uint64 texture_heap_offset = 0;
@@ -140,13 +141,19 @@ int main() {
             BackendUserData* backend_data = static_cast<BackendUserData*>(user_data);
             const gpu::SizeAlign texture_size = gpu::get_texture_size_align(backend_data->device, desc);
             gpu::Texture* texture = gpu::create_texture(backend_data->device, desc, backend_data->texture_heap, backend_data->texture_heap_offset);
+            backend_data->texture_heap_offset = (backend_data->texture_heap_offset + texture_size.align - 1) & ~(texture_size.align - 1);
             backend_data->texture_heap_offset += texture_size.size;
-            gpu::uint32 texture_slot = backend_data->texture_slot++;
+            const gpu::uint32 texture_slot = backend_data->texture_slot++;
             gpu::write_texture_descriptor(backend_data->texture_descriptor_heap, texture_slot, texture, gpu::TextureDescriptorType::sampled);
-            return ImGui_ImplNoGraphicsAPI_Texture{ texture, texture_slot };
+            gpu::initialize_texture(backend_data->commands, texture);  // can be done in update_texture
+            return ImGui_ImplNoGraphicsAPI_Texture{ .slot = texture_slot, .texture_data = texture };
         },
-        .destroy_texture = [](void* user_data, const ImGui_ImplNoGraphicsAPI_Texture& texture) {
-            gpu::destroy_texture(texture.texture);
+        .update_texture = [](void* user_data, const ImGui_ImplNoGraphicsAPI_Texture& texture, const gpu::TextureCopyDesc& copy_desc, gpu::Span<gpu::byte> data) {
+            BackendUserData* backend_data = static_cast<BackendUserData*>(user_data);
+            ImGui_ImplNoGraphicsAPI_UpdateTexture(backend_data->commands, static_cast<gpu::Texture*>(texture.texture_data), copy_desc, data);
+        },
+        .destroy_texture = [](void* /*user_data*/, const ImGui_ImplNoGraphicsAPI_Texture& texture) {
+            gpu::destroy_texture(static_cast<gpu::Texture*>(texture.texture_data));
         }
     });
 
@@ -212,15 +219,16 @@ int main() {
         const gpu::SwapchainFrame frame = gpu::acquire(commands);
         if (!frame.render_view) {
             gpu::end_commands(commands);
-            continue;  // TODO handle window resize, etc
+            continue;
         }
 
+        user_data.commands = commands;
         user_data.frame_heap = {
             .cpu = heap.range.cpu + frame_index*heap.range.size/2,
             .gpu = heap.range.gpu + frame_index*heap.range.size/2,
             .size = heap.range.size/2,
         };
-        ImGui_ImplNoGraphicsAPI_UpdateTextures(commands, ImGui::GetDrawData());
+        ImGui_ImplNoGraphicsAPI_UpdateTextures(ImGui::GetDrawData());
 
         gpu::set_texture_descriptor_heap(commands, texture_descriptor_heap);
         gpu::set_sampler_descriptor_heap(commands, sampler_descriptor_heap);

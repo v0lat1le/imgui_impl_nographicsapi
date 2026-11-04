@@ -11,8 +11,8 @@ struct ImGui_ImplNoGraphicsAPI_RenderState {
 };
 
 struct ImGui_ImplNoGraphicsAPI_Texture {
-    gpu::Texture* texture;
     gpu::uint32 slot;
+    void* texture_data;
 };
 
 struct ImGui_ImplNoGraphicsAPI_InitInfo {
@@ -25,13 +25,16 @@ struct ImGui_ImplNoGraphicsAPI_InitInfo {
     void* user_data;
     gpu::GpuCpuRange<gpu::byte> (*allocate_frame_memory)(void* user_data, gpu::uint64 size, gpu::uint64 alignment);
     ImGui_ImplNoGraphicsAPI_Texture (*create_texture)(void* user_data, const gpu::TextureDesc& desc);
+    void (*update_texture)(void* user_data, const ImGui_ImplNoGraphicsAPI_Texture& texture, const gpu::TextureCopyDesc& copy_desc, gpu::Span<gpu::byte> data);
     void (*destroy_texture)(void* user_data, const ImGui_ImplNoGraphicsAPI_Texture& texture);
 };
 
 IMGUI_IMPL_API void ImGui_ImplNoGraphicsAPI_Init(const ImGui_ImplNoGraphicsAPI_InitInfo& init_info);
 IMGUI_IMPL_API void ImGui_ImplNoGraphicsAPI_NewFrame();
-IMGUI_IMPL_API void ImGui_ImplNoGraphicsAPI_UpdateTextures(gpu::CommandBuffer* commands, ImDrawData* draw_data);
+IMGUI_IMPL_API void ImGui_ImplNoGraphicsAPI_UpdateTextures(ImDrawData* draw_data);
 IMGUI_IMPL_API void ImGui_ImplNoGraphicsAPI_RenderDrawData(gpu::CommandBuffer* commands, ImDrawData* draw_data);
 IMGUI_IMPL_API void ImGui_ImplNoGraphicsAPI_Shutdown();
+
+IMGUI_IMPL_API void ImGui_ImplNoGraphicsAPI_UpdateTexture(gpu::CommandBuffer* commands, gpu::Texture* texture, gpu::TextureCopyDesc copy_desc, gpu::Span<gpu::byte> data);
 
 #endif
