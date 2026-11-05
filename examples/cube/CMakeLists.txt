@@ -1,0 +1,5 @@
+add_executable(cube "cube.cpp")
+target_link_libraries(cube PRIVATE RGFW NoGraphicsAPI::NoGraphicsAPI NoGraphicsAPIUtility::math NoGraphicsAPIUtility::textures NoGraphicsAPIUtility::uploads imgui imgui_impl_rgfw imgui_impl_nographicsapi)
+if(APPLE)
+    target_link_libraries(cube PRIVATE "-framework Cocoa")
+endif()

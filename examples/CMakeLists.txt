@@ -60,4 +60,4 @@ target_include_directories(imgui_impl_nographicsapi PUBLIC ${PROJECT_SOURCE_DIR}
 target_link_libraries(imgui_impl_nographicsapi PRIVATE imgui NoGraphicsAPI)
 
 add_subdirectory(triangle)
-#add_subdirectory(cube)
+add_subdirectory(cube)
