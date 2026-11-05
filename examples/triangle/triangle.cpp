@@ -4,6 +4,7 @@
 
 #include "imgui.h"
 #define RGFW_IMPLEMENTATION
+#include "RGFW.h"
 #define RGFW_IMGUI_IMPLEMENTATION
 #include "imgui_impl_rgfw.h"
 #include "imgui_impl_nographicsapi.h"
@@ -26,27 +27,23 @@ void convert_imgui_style_to_linear_HACK() {
     }
 }
 
-#ifdef __APPLE__
+#if defined(__APPLE__)
     id get_metal_layer(RGFW_window* window) {
         void* view = RGFW_window_getView_OSX(window);
-        return ((id (*)(id, SEL))objc_msgSend)((id)view, sel_getUid("layer"));
+        return ((id(*)(id, SEL))objc_msgSend)((id)view, sel_getUid("layer"));
     }
     void* init_surface(RGFW_window* window) {
-        id view = (id)RGFW_window_getView_OSX(window);
-        ((void (*)(id, SEL, id))objc_msgSend)(view, sel_registerName("setLayer:"), (id)RGFW_getLayer_OSX());
-        ((void (*)(id, SEL, BOOL))objc_msgSend)(view, sel_registerName("setWantsLayer:"), YES);
+        RGFW_window_setLayer_OSX(window, RGFW_getLayer_OSX());
         return get_metal_layer(window);
     }
 
     void update_surface(RGFW_window* window) {
         id layer = get_metal_layer(window);
-        RGFW_monitor monitor = RGFW_window_getMonitor(window);
-        ((void (*)(id, SEL, CGFloat))objc_msgSend)(layer, sel_registerName("setContentsScale:"), monitor.pixelRatio);
-        ImGui::GetIO().DisplayFramebufferScale = { monitor.pixelRatio, monitor.pixelRatio };
+        ((void (*)(id, SEL, CGFloat))objc_msgSend)(layer, sel_registerName("setContentsScale:"), RGFW_window_getMonitor(window)->pixelRatio);
 
-        i32 width, height;
-        RGFW_window_getSize(window, &width, &height);
-        ((void (*)(id, SEL, CGSize))objc_msgSend)(layer, sel_registerName("setDrawableSize:"), CGSizeMake(width*monitor.pixelRatio, height*monitor.pixelRatio));
+        i32 pixel_width, pixel_height;
+        RGFW_window_getSizeInPixels(window, &pixel_width, &pixel_height);
+        ((void (*)(id, SEL, CGSize))objc_msgSend)(layer, sel_registerName("setDrawableSize:"), CGSizeMake(pixel_width, pixel_height));
     }
 #else
     void* init_surface(RGFW_window* window) {
@@ -57,6 +54,7 @@ void convert_imgui_style_to_linear_HACK() {
 #endif
 
 int main() {
+    RGFW_init("imgui-nographicsapi", 0);
     RGFW_window* window = RGFW_createWindow("imgui-nographicsapi", 0, 0, 800, 600, RGFW_windowCenter);
 
     gpu::Device* device = gpu::create_device({ .window = init_surface(window), .swapchain_format = gpu::Format::bgra8_srgb }).device;

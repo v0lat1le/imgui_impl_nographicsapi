@@ -13,12 +13,12 @@ FetchContent_Declare(
 FetchContent_Declare(
     RGFW
     GIT_REPOSITORY https://github.com/ColleagueRiley/RGFW.git
-    GIT_TAG        1.8.1
+    GIT_TAG        main
 )
 FetchContent_Declare(
     imgui_impl_rgfw
     GIT_REPOSITORY https://github.com/Hedgehogsoft/imgui_impl_rgfw.h.git
-    GIT_TAG        release-1
+    GIT_TAG        main
 )
 FetchContent_MakeAvailable(NoGraphicsAPI imgui RGFW imgui_impl_rgfw)
 
